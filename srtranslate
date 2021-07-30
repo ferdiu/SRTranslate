@@ -56,7 +56,7 @@ for t in data['sentences']:
 }
 
 translate_line() {
-    get_translated_string `google_translate_line $@`
+    get_translated_string `google_translate_line $(echo "$@" | tr "\n" " " | tr "\r" " " | tr "\t" " ")`
 }
 
 time_string_regexp="^[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*-->[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*$"
@@ -68,7 +68,7 @@ is_empty()       { [[ $@ =~ ^[[:space:]]*$ ]] && echo "y" || echo "n"; }
 is_text()        { ([ "n" = `is_counter $@` ] && [ "n" = `is_time_string $@` ] && [ "n" = `is_empty $@` ]) && echo "y" || echo "n"; }
 
 fname="${3%%.srt}"
-fname="${3%%_${source_lang}}"
+fname="${fname%%_${source_lang}}"
 outfile="${fname}_$target_lang.srt"
 echo -n "" > "$outfile"
 
