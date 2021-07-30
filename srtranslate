@@ -59,7 +59,7 @@ translate_line() {
     get_translated_string `google_translate_line $@`
 }
 
-time_string_regexp="^[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*-->[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9]$"
+time_string_regexp="^[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*-->[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*$"
 counter_regexp="^[[:space:]]*[0-9]+[[:space:]]*$"
 
 is_counter()     { [[ $@ =~ $counter_regexp ]] && echo "y" || echo "n"; }
@@ -67,7 +67,9 @@ is_time_string() { [[ $@ =~ $time_string_regexp ]] && echo "y" || echo "n"; }
 is_empty()       { [[ $@ =~ ^[[:space:]]*$ ]] && echo "y" || echo "n"; }
 is_text()        { ([ "n" = `is_counter $@` ] && [ "n" = `is_time_string $@` ] && [ "n" = `is_empty $@` ]) && echo "y" || echo "n"; }
 
-outfile="${3%%.srt}_$target_lang.srt"
+fname="${3%%.srt}"
+fname="${3%%_${source_lang}}"
+outfile="${fname}_$target_lang.srt"
 echo -n "" > "$outfile"
 
 min() {
@@ -98,21 +100,20 @@ reformat_line() {
     local words=(`echo $@`)
     local written=0
     local current_lines=1
-    local i=1
     for w in ${words[@]}; do
-        if ! test $i -eq 1; then
-            if test $current_lines -lt $orig_line_number -a $(($written + ${#w})) -gt $PREFERRED_MAX_LINE_LENGTH; then
-                delim="\n"
-                written=0
-            else
-                delim=" "
-            fi
-        else
+        if test $written -eq 0; then
             delim=""
+        elif test $current_lines -lt $orig_line_number -a $(($written + ${#w} + 1)) -gt $PREFERRED_MAX_LINE_LENGTH; then
+            delim="\n"
+            written=0
+        else
+            delim=" "
         fi
         echo -en "${delim}${w}"
-        written=$((${#w} + 1 + $written))
-        i=$(($i + 1))
+        written=$((${#w} + $written))
+        if test "$delim" != ""; then
+            written=$(($written + 1))
+        fi
     done
     echo -en "\n"
 }
@@ -120,12 +121,12 @@ reformat_line() {
 string_buffer=""
 orig_line_number=0
 orig_max_length=0
-while read line; do
-    if [ `is_counter $line` = "y" ]; then
+cat "$3" | while read line; do
+    if [ `is_counter "$line"` = "y" ]; then
         echo "$line" >> "$outfile"
-    elif [ `is_time_string $line` = "y" ]; then
+    elif [ `is_time_string "$line"` = "y" ]; then
         echo "$line" >> "$outfile"
-    elif [ `is_text $line` = "y" ]; then
+    elif [ `is_text "$line"` = "y" ]; then
         if test ${#string_buffer} -gt 0; then
             string_buffer="$string_buffer $line"
             if test ${#line} -gt $orig_max_length; then
@@ -139,7 +140,7 @@ while read line; do
     else
         if test ${#string_buffer} -gt 0; then
             translated="`translate_line $string_buffer`"
-            reformat_line $orig_line_number $orig_max_length $translated >> "$outfile"
+            reformat_line "$orig_line_number" "$orig_max_length" "$translated" >> "$outfile"
         fi
         string_buffer=""
         echo "$line" >> "$outfile"
@@ -148,5 +149,5 @@ done < "$3"
 
 if test ${#string_buffer} -gt 0; then
     translated="`translate_line $string_buffer`"
-    reformat_line $orig_line_number $orig_max_length $translated >> "$outfile"
+    reformat_line "$orig_line_number" "$orig_max_length" "$translated" >> "$outfile"
 fi
