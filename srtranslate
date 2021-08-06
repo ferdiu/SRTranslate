@@ -110,7 +110,6 @@ done <<< $(tac "$3")
 
 show_progress() {
     echo -ne "\rTranslating line $1 / $2..."
-    sleep 1
 }
 
 string_buffer=""
@@ -122,8 +121,8 @@ time_queue=()
 dump_queue() {
     test ${#id_queue[@]} -ne ${#time_queue[@]} && echo "error: id_queue and time_queue have different sizes" >&2 && exit 4
     # TODO: insert here logic to meaningfully split the translated string
-    local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$string_buffer\"`")
-    # local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$(translate_line \"$string_buffer\")\"`")
+    # local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$string_buffer\"`")
+    local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$(translate_line \"$string_buffer\")\"`")
     for i in `seq 0 $((${#id_queue[@]} - 1))`; do
         echo "${id_queue[$i]}" >> "$outfile"
         echo "${time_queue[$i]}" >> "$outfile"
