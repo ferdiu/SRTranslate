@@ -50,13 +50,17 @@ python -c "import json
 import sys
 
 s = ' '.join(sys.argv[1:])
-data = json.loads(s)
+try:
+    data = json.loads(s)
+except:
+    exit(1)
 for t in data['sentences']:
     print(t['trans'])" "$@"
 }
 
 translate_line() {
-    get_translated_string `google_translate_line $(echo "$@" | tr "\n" " " | tr "\r" " " | tr "\t" " ")`
+    get_translated_string `google_translate_line $(echo "$@" | tr "\n" " " | tr "\r" " " | tr "\t" " ")` || \
+        (echo "" && echo "error: unable to translate line" >&2 && exit 10)
 }
 
 time_string_regexp="^[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*-->[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*$"
@@ -68,6 +72,54 @@ is_empty()       { [[ $@ =~ ^[[:space:]]*$ ]] && echo "y" || echo "n"; }
 is_text()        { ([ "n" = `is_counter $@` ] && [ "n" = `is_time_string $@` ] && [ "n" = `is_empty $@` ]) && echo "y" || echo "n"; }
 
 ends_with_puntuation() { [[ $@ =~ [.!?]$ ]] && echo "y" || echo "n"; }
+time_start()           { echo "$@" | grep -oP "^[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9]"; }
+time_end()             { echo "$@" | grep -oP "[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*$"; }
+print_time() {
+    local regexp="[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*"
+    if [ `is_time_string "$1"` = "y" ] && [ `is_time_string "$2"` = "y" ]; then
+        echo "`time_start $1` --> `time_end $2`"
+        return
+    elif [ $1 ~= $regexp ] || [ $2 ~= $regexp ]; then
+        echo "error: not a time string" >&2
+        exit 5
+    fi
+    echo "$1 --> $2"
+}
+
+calc() {
+    if test $# -eq 1; then
+        echo $@
+    else
+        awk "BEGIN{printf \"%.2f\n\", ($(echo $@ | sed 's/ //g'))}"
+    fi
+}
+is_lt() { awk "BEGIN { print ($1 < $2) ? \"y\" : \"n\" }"; }
+is_le() { awk "BEGIN { print ($1 <= $2) ? \"y\" : \"n\" }"; }
+is_gt() { awk "BEGIN { print ($1 > $2) ? \"y\" : \"n\" }"; }
+is_ge() { awk "BEGIN { print ($1 >= $2) ? \"y\" : \"n\" }"; }
+tot()  {
+    if test $# -eq 1; then
+        echo $@
+    else
+        expr `echo "$@" | sed 's/\n/ + /g' | sed 's/ / + /g'`
+    fi
+}
+
+before_comma() { echo "$@" | grep -oP "^[^,]*,"; }
+after_comma()  { echo "$@" | grep -oP ",.*$"; }
+
+get_spaces_indices() {
+    local string="$@"
+    local indices=()
+    local i=0
+    for i in `seq 1 ${#string}`; do
+        if test "${string:i-1:1}" = " "; then
+            indices+=("$(($i - 1))")
+        fi
+        i=$(($i + 1))
+    done
+    echo "${indices[@]}"
+}
 
 fname="${3%%.srt}"
 fname="${fname%%_${source_lang}}"
@@ -113,29 +165,92 @@ show_progress() {
 }
 
 string_buffer=""
-orig_line_number=0
 orig_max_length=0
+orig_line_number=()
 id_queue=()
 time_queue=()
+words_count=()
+
+array_absolute_to_relative() {
+    local new_array=()
+    local total=$(tot $@)
+    for n in $@; do
+        new_array+=("`calc $n / $total`")
+    done
+    echo "${new_array[@]}"
+}
+
+best_split_delta_comma=0.1
+best_split_delta_spaces=0.1
+tmp_divided_lines=()
+is_good_enough() {
+    local first_rel=`array_absolute_to_relative ${words_count[@]}`
+    first_rel="${first_rel[0]}"
+    test $(is_le `calc ${first_rel} - $2` $1) = "y" -a $(is_ge `calc ${first_rel} + $2` $1) = "y" && echo "y" || echo "n"
+}
+best_split() {
+    tmp_divided_lines=()
+    local sub_relative_length=(`array_absolute_to_relative $(echo ${words_count[@]})`)
+    local total=`tot ${words_count[@]}`
+    # 1) try to split where "," is found
+    if test `expr index "$@" ","` -gt 0 -a $(is_good_enough $(calc `before_comma "$@" | wc -w` / $total) $best_split_delta_comma) = "y"; then
+        tmp_divided_lines+=("`before_comma $@`")
+        tmp_divided_lines+=("`after_comma $@`")
+        tmp_divided_lines[1]=${tmp_divided_lines[1]#,}
+        tmp_divided_lines[1]=${tmp_divided_lines[1]# }
+        return
+    fi
+    # insert here new smart way to split a subtitle string
+    # 2) try to split using words count
+    local spaces_idx=(`get_spaces_indices $@`)
+    local best_idx=0
+    local best_space_idx=0
+    local i=0
+    local j=1 # j is the number of words before the current space
+    for i in ${spaces_idx[@]}; do
+        if test `is_good_enough $(calc $j / $total) $best_split_delta_spaces` = "y"; then
+            break
+        elif test $(is_ge $(calc $j / $total) ${sub_relative_length[0]}) = "y"; then
+            break
+        fi
+        j=$(($j + 1))
+    done
+    tmp_divided_lines+=("${string_buffer:0:$i}")
+    tmp_divided_lines+=("${string_buffer:$i+1}")
+}
 
 dump_queue() {
+    local divided_lines=()
     test ${#id_queue[@]} -ne ${#time_queue[@]} && echo "error: id_queue and time_queue have different sizes" >&2 && exit 4
-    # TODO: insert here logic to meaningfully split the translated string
-    # local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$string_buffer\"`")
-    local lines=("`reformat_line \"$orig_line_number\" \"$orig_max_length\" \"$(translate_line \"$string_buffer\")\"`")
+    string_buffer="`translate_line $string_buffer || echo $string_buffer`"
+    if test ${#id_queue[@]} -gt 1; then
+        local processed=0
+        while test $((${#id_queue[@]} - $processed)) -gt 1; do
+            best_split "$string_buffer"
+            divided_lines+=("${tmp_divided_lines[0]}")
+            string_buffer="${tmp_divided_lines[1]}"
+            processed=$(($processed + 1))
+        done
+    fi
+    divided_lines+=("$string_buffer")
     for i in `seq 0 $((${#id_queue[@]} - 1))`; do
         echo "${id_queue[$i]}" >> "$outfile"
         echo "${time_queue[$i]}" >> "$outfile"
-        echo "${lines[$i]}" >> "$outfile"
+        echo "`reformat_line \"${orig_line_number[$i]}\" \"$orig_max_length\" \"${divided_lines[$i]}\"`" >> "$outfile"
         echo "" >> "$outfile"
     done
     id_queue=()
     time_queue=()
+    words_count=()
+    orig_line_number=()
     string_buffer=""
 }
 
+is_new_sub_line=y
+
 while read line; do
     if [ `is_counter "$line"` = "y" ]; then
+        # TODO: uncomment this
         show_progress $line $number_of_lines
         id_queue+=("$line")
     elif [ `is_time_string "$line"` = "y" ]; then
@@ -149,18 +264,32 @@ while read line; do
         else
             string_buffer="$line"
             orig_max_length=${#line}
-            orig_line_number=1
         fi
-        orig_line_number=$(($orig_line_number + 1))
+        if test $is_new_sub_line = "y"; then
+            orig_line_number+=(1)
+            is_new_sub_line=n
+        else
+            orig_line_number[$((${#orig_line_number[@]} - 1))]=$((${orig_line_number[$((${#orig_line_number[@]} - 1))]} + 1))
+        fi
     else
-        # TODO: enable joining of subsequent subtitles uncommenting second condition
-        if test ${#string_buffer} -gt 0;then # -a `ends_with_puntuation "$string_buffer"` = "y"; then
-            dump_queue
+        is_new_sub_line=y
+        if test ${#string_buffer} -gt 0; then
+            words_count+=("`echo $string_buffer | wc -w`")
+            if test ${#words_count[@]} -gt 1; then
+                words_count[$((${#words_count[@]} - 1))]=$((${words_count[$((${#words_count[@]} - 1))]} - ${words_count[$((${#words_count[@]} - 2))]}))
+            fi
+            if test `ends_with_puntuation "$string_buffer"` = "y"; then
+                dump_queue
+            fi
         fi
     fi
 done <<< `cat "$3"`
 
 if test ${#string_buffer} -gt 0; then
+    words_count+=("`echo $string_buffer | wc -w`")
+    if test ${#words_count[@]} -gt 1; then
+        words_count[$((${#words_count[@]} - 1))]=$((${words_count[$((${#words_count[@]} - 1))]} - ${words_count[$((${#words_count[@]} - 2))]}))
+    fi
     dump_queue
 fi
 
