@@ -1,6 +1,7 @@
 #!/bin/bash
 
 PREFERRED_MAX_LINE_LENGTH=40
+NAME_LANG_SEP="."
 
 usage() {
     echo -e "usage:\t$0 <source lang> <target lang> <original file path>"
@@ -71,7 +72,9 @@ is_time_string() { [[ $@ =~ $time_string_regexp ]] && echo "y" || echo "n"; }
 is_empty()       { [[ $@ =~ ^[[:space:]]*$ ]] && echo "y" || echo "n"; }
 is_text()        { ([ "n" = `is_counter $@` ] && [ "n" = `is_time_string $@` ] && [ "n" = `is_empty $@` ]) && echo "y" || echo "n"; }
 
-ends_with_puntuation() { [[ $@ =~ [.!?]$ ]] && echo "y" || echo "n"; }
+convert_all_CRLF_to_LF() { sed -i s/\\r$//g "$1"; }
+remove_BOM() { sed -i '1s/^\xEF\xBB\xBF//' "$1"; }
+ends_with_puntuation() { [[ $@ =~ [^.][^.][]\>\)\}.!?]$ ]] && echo "y" || echo "n"; }
 time_start()           { echo "$@" | grep -oP "^[[:space:]]*[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9]"; }
 time_end()             { echo "$@" | grep -oP "[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9][[:space:]]*$"; }
 print_time() {
@@ -123,7 +126,7 @@ get_spaces_indices() {
 
 fname="${3%%.srt}"
 fname="${fname%%_${source_lang}}"
-outfile="${fname}_$target_lang.srt"
+outfile="${fname}${NAME_LANG_SEP}$target_lang.srt"
 echo -n "" > "$outfile"
 
 reformat_line() {
@@ -221,7 +224,11 @@ best_split() {
 
 dump_queue() {
     local divided_lines=()
-    test ${#id_queue[@]} -ne ${#time_queue[@]} && echo "error: id_queue and time_queue have different sizes" >&2 && exit 4
+    test ${#id_queue[@]} -ne ${#time_queue[@]} && \
+        echo "error: id_queue and time_queue have different sizes: ${#id_queue[@]} vs ${#time_queue[@]}" >&2 && \
+        echo "id_queue: [`for v in ${id_queue[@]}; do echo -n $v', '; done`]" >&2 && \
+        echo "time_queue: [`for v in "${time_queue[@]}"; do echo -n $v', '; done`]" >&2 && \
+        exit 4
     string_buffer="`translate_line $string_buffer || echo $string_buffer`"
     if test ${#id_queue[@]} -gt 1; then
         local processed=0
@@ -246,11 +253,12 @@ dump_queue() {
     string_buffer=""
 }
 
+convert_all_CRLF_to_LF "$3"
+remove_BOM "$3"
 is_new_sub_line=y
 
 while read line; do
     if [ `is_counter "$line"` = "y" ]; then
-        # TODO: uncomment this
         show_progress $line $number_of_lines
         id_queue+=("$line")
     elif [ `is_time_string "$line"` = "y" ]; then
